@@ -10,4 +10,4 @@
   (public_name wscat-async)
   (package websocket-async)
   (modules wscat)
-  (libraries (uri.services websocket-async))))
+  (libraries (async uri.services websocket-async))))

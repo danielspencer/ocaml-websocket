@@ -7,3 +7,9 @@
  ((name upgrade_connection)
   (modules (upgrade_connection))
   (libraries (websocket-lwt.cohttp))))
+
+(executable
+ ((name async_upgrade_connection)
+  (modules (async_upgrade_connection))
+  (libraries (async_rpc_kernel websocket-async))
+  (preprocess (pps (ppx_jane)))))

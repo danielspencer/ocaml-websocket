@@ -74,3 +74,14 @@ val server :
     with the request as its argument. If [request_cb] returns true,
     the connection will proceed, otherwise, the result is immediately
     determined to [Error Exit]. *)
+
+val upgrade_connection:
+  Cohttp.Request.t ->
+  app_to_ws:(Frame.t Pipe.Reader.t) ->
+  ws_to_app:(Frame.t Pipe.Writer.t) ->
+  [> `Switching_protocols of Cohttp.Header.t * (Reader.t -> Writer.t -> unit Deferred.t) ]
+
+val upgrade_connection_transport:
+  Cohttp.Request.t ->
+  Rpc.Transport.t *
+  [> `Switching_protocols of Cohttp.Header.t * (Reader.t -> Writer.t -> unit Deferred.t) ]

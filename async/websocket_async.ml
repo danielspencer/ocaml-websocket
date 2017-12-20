@@ -74,16 +74,20 @@ let client
     drain_handshake net_to_ws ws_to_net >>= fun () ->
     Option.iter initialized (fun ivar -> Ivar.fill ivar ());
     let read_frame =
-      make_read_frame ~mode:(Client random_string) net_to_ws ws_to_net in
+      let inner = make_read_frame ~mode:(Client random_string) net_to_ws ws_to_net in
+      fun () -> Monitor.try_with_or_error inner
+    in
     let buf = Buffer.create 128 in
     let rec forward_frames_to_app ws_to_app =
-      read_frame () >>= fun fr ->
-      begin
-        if not @@ Pipe.is_closed ws_to_app then
-          Pipe.write ws_to_app fr else
-        Deferred.unit
-      end >>= fun () ->
-      forward_frames_to_app ws_to_app
+      read_frame () >>= function
+      | Error _ -> return (Pipe.close ws_to_app)
+      | Ok fr ->
+        begin
+          if not @@ Pipe.is_closed ws_to_app then
+            Pipe.write ws_to_app fr else
+            Deferred.unit
+        end >>= fun () ->
+        forward_frames_to_app ws_to_app
     in
     let forward_frames_to_net ws_to_net app_to_ws =
       Writer.transfer ws_to_net app_to_ws begin fun fr ->
@@ -252,11 +256,18 @@ let server
   Deferred.Or_error.bind ~f:begin fun () ->
     set_tcp_nodelay writer;
     let read_frame =
-      make_read_frame ~mode:Server reader writer in
+      let inner = make_read_frame ~mode:Server reader writer in
+      fun () -> Monitor.try_with_or_error inner
+
+    in
     let rec loop () =
       read_frame () >>=
-      Pipe.write ws_to_app >>=
-      loop
+      function
+        | Error _ -> return (Pipe.close ws_to_app)
+        | Ok fr ->
+          Pipe.write ws_to_app fr
+          >>=
+          loop
     in
     let transfer_end =
       let buf = Buffer.create 128 in
@@ -279,3 +290,66 @@ let server
          Pipe.closed app_to_ws]
     end >>= Deferred.Or_error.return
   end
+
+let upgrade_connection request ~app_to_ws ~ws_to_app =
+  (* CR djs: Reduce duplication *)
+  let headers = Cohttp.Request.headers request in
+  let key = Option.value_exn (Cohttp.Header.get headers "sec-websocket-key") in
+  let hash = key ^ Websocket.websocket_uuid |> Websocket.b64_encoded_sha1sum in
+  let response_headers =
+    Cohttp.Header.of_list
+      ["Upgrade", "websocket"
+      ;"Connection", "Upgrade"
+      ;"Sec-WebSocket-Accept", hash]
+  in
+  let handler reader writer =
+    set_tcp_nodelay writer;
+    let read_frame =
+      let inner = make_read_frame ~mode:Server reader writer in
+      fun () -> Monitor.try_with_or_error inner
+    in
+    let rec loop () =
+      read_frame () >>= function
+      | Error _ -> return (Pipe.close ws_to_app)
+      | Ok fr ->
+        Pipe.write ws_to_app fr
+        >>=
+        loop
+    in
+    let transfer_end =
+      let buf = Buffer.create 128 in
+      Pipe.transfer app_to_ws Writer.(pipe writer) begin fun fr ->
+        Buffer.clear buf;
+        write_frame_to_buf ~mode:Server buf fr;
+        Buffer.contents buf
+      end
+    in
+    Monitor.protect
+      ~finally:begin fun () ->
+        Pipe.close ws_to_app ;
+        Pipe.close_read app_to_ws ;
+        Deferred.unit
+      end begin fun () ->
+      Deferred.any
+        [transfer_end;
+         loop ();
+         Pipe.closed ws_to_app;
+         Pipe.closed app_to_ws]
+    end
+  in
+  `Switching_protocols (response_headers, handler)
+(*`Switching_protocols of Cohttp.Header.t * (Reader.t -> Writer.t -> unit Deferred.t)*)
+
+let upgrade_connection_transport request =
+  let reader, ws_to_app = Pipe.create () in
+  let app_to_ws, writer = Pipe.create () in
+  let app_to_ws =
+    Pipe.map app_to_ws
+      ~f:(fun content -> Frame.create ~opcode:Binary ~content ())
+  in
+  let open Async_rpc_kernel in
+  let transport = Pipe_transport.create Pipe_transport.Kind.string
+      (Pipe.map reader ~f:(fun f -> f.Frame.content))
+      writer
+  in
+  transport, upgrade_connection request ~ws_to_app ~app_to_ws

@@ -18,7 +18,7 @@
 include Websocket
 
 module C = Cohttp
-module Lwt_IO = Websocket.IO(Cohttp_lwt_unix_io)
+module Lwt_IO = Websocket.IO(Cohttp_lwt_unix.IO)
 
 open Lwt.Infix
 
@@ -74,4 +74,4 @@ let upgrade_connection request conn incoming_handler =
               ]
           | _ -> Lwt.fail_with "expected TCP Websocket connection"
   in
-  Lwt.return (resp, Cohttp_lwt_body.of_stream body_stream, frames_out_fn)
+  Lwt.return (resp, Cohttp_lwt.Body.of_stream body_stream, frames_out_fn)
